@@ -1,0 +1,3 @@
+# build output is installed to ~/Applications, not kept in the repo
+*.app
+.DS_Store
