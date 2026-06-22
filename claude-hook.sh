@@ -1,11 +1,9 @@
 #!/bin/bash
-# clawdphetamine hook — register this Claude Code session and make sure the background
-# agent is running. Wired into ~/.claude/settings.json on SessionStart and
-# UserPromptSubmit. Designed to be cheap (no node, no JSON parsing) and idempotent.
-#
-# It keys the session marker on the PID of the `claude` process. Because the agent
-# watches that PID for liveness, cleanup happens automatically when the process
-# dies for ANY reason (clean exit, crash, or terminal quit) — no SessionEnd needed.
+# clawdphetamine hook — record this Claude Code session's busy/idle state for the agent.
+# Wired into ~/.claude/settings.json:
+#   UserPromptSubmit -> "busy" (a turn started)     Stop -> "idle" (the turn ended)
+# Cheap (no node, no JSON parsing) and idempotent. The marker is keyed on the `claude`
+# PID, so the agent also cleans up automatically if the process dies (crash/quit).
 
 set -u
 
@@ -26,13 +24,14 @@ find_claude_pid() {
     printf '%s' "$PPID"   # fallback: best effort
 }
 
+STATE="${1:-busy}"                                 # "busy" (turn active) or "idle" (turn ended)
 CPID=$(find_claude_pid)
 DIR="$HOME/.local/state/clawdphetamine/sessions"
 # App location: env override (set by the Homebrew formula) else the default install path.
 APP="${CLAWDPHETAMINE_APP:-$HOME/Applications/clawdphetamine.app}"
 
 mkdir -p "$DIR"
-: > "$DIR/$CPID"                                   # marker (name = PID, mtime = last seen)
-open -g "$APP" >/dev/null 2>&1 || true            # launch agent if not already running
+printf '%s' "$STATE" > "$DIR/$CPID"               # marker: name=PID, contents=state, mtime=now
+[ "$STATE" = busy ] && open -g "$APP" >/dev/null 2>&1 || true   # launch agent when work starts
 
 exit 0

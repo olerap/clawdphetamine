@@ -1,25 +1,24 @@
 import Cocoa
 import Darwin
 
-// clawdphetamine — a minimal macOS background agent that exists exactly while at least
-// one Claude Code session process is alive.
+// clawdphetamine — a minimal macOS background agent that runs only while Claude Code
+// is actively working, so an Amphetamine "Application" trigger keeps the Mac awake
+// during a turn (plus a short grace after) but not while a session sits idle.
 //
 // Why: Amphetamine can only trigger on a running *application*, not on the `claude`
-// CLI. This agent is that application. Pair it with an Amphetamine "Application"
-// trigger so your Mac stays awake only while Claude Code is running.
+// CLI — so this agent is that application.
 //
-// Mechanism (see README.md):
-//   • Claude Code hooks drop a marker file named after the `claude` process PID
-//     into ~/.local/state/clawdphetamine/sessions/ at session start.
-//   • This agent polls that directory every `pollInterval` seconds. A marker is
-//     "live" while its PID is alive (kill(pid,0)). Dead-PID markers are removed.
-//   • When no live markers remain, the agent quits. Its own process exit is what
-//     releases the Amphetamine trigger — so cleanup is automatic on a clean exit,
-//     a crash, OR a terminal quit (anything that kills the claude process).
+// Mechanism (see README.md): Claude Code hooks write a marker file per session, named
+// after the `claude` PID, holding the state "busy" or "idle":
+//     UserPromptSubmit -> "busy" (turn started)     Stop -> "idle" (turn ended)
+// Each poll, a marker counts as live while the PID is alive AND (state is "busy", OR it
+// went "idle" less than `graceSeconds` ago). When no live markers remain the agent quits
+// — its exit releases the trigger. A dead PID is always pruned (crash net).
 
 let sessionsDir = NSString(string: "~/.local/state/clawdphetamine/sessions").expandingTildeInPath
 let pollInterval: TimeInterval = 5.0
-let maxAgeSeconds: TimeInterval = 24 * 60 * 60   // backstop against PID reuse
+let graceSeconds: TimeInterval = 600             // stay awake this long after a turn ends (idle)
+let maxAgeSeconds: TimeInterval = 24 * 60 * 60   // backstop: drop a "busy" marker stuck this long
 
 func pidIsAlive(_ pid: pid_t) -> Bool {
     if kill(pid, 0) == 0 { return true }
@@ -55,14 +54,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for name in names {
             let path = (sessionsDir as NSString).appendingPathComponent(name)
             guard let pid = pid_t(name) else { try? fm.removeItem(atPath: path); continue }
-            var alive = pidIsAlive(pid)
-            if alive,
-               let attrs = try? fm.attributesOfItem(atPath: path),
-               let mtime = attrs[.modificationDate] as? Date,
-               Date().timeIntervalSince(mtime) > maxAgeSeconds {
-                alive = false            // stale: assume PID was reused
-            }
-            if alive { live += 1 } else { try? fm.removeItem(atPath: path) }
+            if !pidIsAlive(pid) { try? fm.removeItem(atPath: path); continue }   // crash net
+
+            let state = ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let attrs = try? fm.attributesOfItem(atPath: path)
+            let mtime = attrs?[.modificationDate] as? Date
+            let age = mtime.map { Date().timeIntervalSince($0) } ?? 0
+
+            // "idle" markers expire after the grace window; "busy" (or legacy/unknown)
+            // markers stay live until a long backstop — covers arbitrarily long turns.
+            let limit = (state == "idle") ? graceSeconds : maxAgeSeconds
+            if age < limit { live += 1 } else { try? fm.removeItem(atPath: path) }
         }
         if live == 0 { NSApp.terminate(nil) }
     }

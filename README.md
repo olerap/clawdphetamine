@@ -1,11 +1,12 @@
 # clawdphetamine
 
-A tiny native macOS background agent that runs only while a Claude Code session is
-alive. Point an Amphetamine **Application** trigger at it and your Mac stays awake
-during Claude Code — and only then. No Electron, no Node, no plugin; ~85 KB of Swift.
+A tiny native macOS background agent that runs only while Claude Code is actively
+working. Point an Amphetamine **Application** trigger at it and your Mac stays awake
+during a turn (plus a short grace) — not while a session just sits open idle.
+No Electron, no Node, no plugin; ~85 KB of Swift.
 
 Amphetamine can only trigger on a running *app*, not on the `claude` CLI — so this is
-that app: an invisible process that exists exactly as long as Claude Code runs.
+that app: an invisible process that exists only while a turn is in flight.
 
 ## Install
 
@@ -18,13 +19,13 @@ brew install clawdphetamine
 
 ## Setup
 
-1. Add the hook to `~/.claude/settings.json` (Homebrew prints the absolute path in its
+1. Add the hooks to `~/.claude/settings.json` (Homebrew prints the absolute path in its
    caveats; a source build uses `~/clawdphetamine/claude-hook.sh`):
 
    ```json
    "hooks": {
-     "SessionStart":     [ { "hooks": [ { "type": "command", "command": "clawdphetamine-hook" } ] } ],
-     "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "clawdphetamine-hook" } ] } ]
+     "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "clawdphetamine-hook busy" } ] } ],
+     "Stop":             [ { "hooks": [ { "type": "command", "command": "clawdphetamine-hook idle" } ] } ]
    }
    ```
 
@@ -33,11 +34,14 @@ brew install clawdphetamine
 
 ## How it works
 
-The hook writes a marker named after the `claude` PID and launches the agent. The agent
-polls every 5 s; a marker is live while its PID is alive, and the agent quits once none
-remain. Its exit is what releases the trigger — so cleanup is automatic on a clean exit,
-a crash, or a terminal quit (no `SessionEnd` hook needed). Concurrent sessions are
-ref-counted (one marker per PID).
+The hooks write one marker per session (named after the `claude` PID) holding `busy` or
+`idle`: `UserPromptSubmit` → busy, `Stop` → idle. The agent polls every 5 s and stays
+alive while any marker is **busy**, or went **idle** less than ~10 min ago (a grace
+window, so reading between turns doesn't drop it). When none qualify it quits, releasing
+the trigger. A long turn never expires (busy isn't time-based); a dead `claude` PID is
+always pruned (crash/quit safety); concurrent sessions are ref-counted.
+
+Tune `graceSeconds` in `clawdphetamine.swift` (default 600).
 
 ## Uninstall
 
